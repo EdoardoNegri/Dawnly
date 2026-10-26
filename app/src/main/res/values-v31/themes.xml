@@ -1,0 +1,7 @@
+<resources>
+    <!-- From Android 12 every new window gets a splash screen; a black one with no icon can't be seen. -->
+    <style name="Theme.SunWakeup.LockScreen" parent="Base.Theme.SunWakeup.LockScreen">
+        <item name="android:windowSplashScreenBackground">@android:color/black</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/blank</item>
+    </style>
+</resources>

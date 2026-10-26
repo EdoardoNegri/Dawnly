@@ -1,0 +1,19 @@
+# Add project specific R8 rules here.
+# AGP will combine all keep rule files in src/main/keepRules to pass to R8
+#
+# For more details, see
+#   https://d.android.com/r/tools/r8/keep-rules
+
+# If your project uses WebView with JS, uncomment the following
+# and specify the fully qualified class name to the JavaScript interface
+# class:
+#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+#   public *;
+#}
+
+# Kotlin builds helpers like CollectionsKt as a chain of package-private classes, each extending the
+# next. With optimization limited to library packages, R8 moved one link into another package without
+# opening up its parent, and the release build crashed at startup with an IllegalAccessError
+# (kotlin.collections.CollectionsKt__IteratorsKt extending CollectionsKt__IterablesKt). Keeping their
+# names keeps every link in its own package; they are still shrunk and optimized.
+-keepnames class **Kt__*
