@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -67,7 +68,12 @@ class ClockEditorState {
     var upright by mutableStateOf(false)
     /** How big each part is drawn in the preview, to tell which one a touch lands on. */
     val itemSizes = mutableStateMapOf<ClockItem, IntSize>()
+    /** The lines the part being moved has snapped to, drawn across the preview while it is held there. */
+    var guides by mutableStateOf<List<Guide>>(emptyList())
 }
+
+/** A line across the clock's screen in the preview: up and down at [at] px across, or else across at [at] px down. */
+data class Guide(val vertical: Boolean, val at: Float)
 
 /** How long the preview is, standing for the screen on its side. */
 private val PreviewLength = 300.dp
@@ -76,8 +82,11 @@ private val PreviewLength = 300.dp
 private const val MIN_SCALE = 0.2f
 private const val MAX_SCALE = 14f
 
-/** How close to the middle, or to a straight angle, a part snaps there. */
-private const val SNAP_DP = 4f
+/**
+ * How close, in the preview, a part's edge or centre has to come to the middle of the screen or to
+ * another part's edge or centre to snap there; and how close to a straight angle it snaps to that.
+ */
+private val SnapDistance = 5.dp
 private const val SNAP_DEGREES = 4f
 
 /** Puts [item] at [place] in the layout for the screen [upright] or on its side, if it isn't there already. */
@@ -102,10 +111,24 @@ private fun snapAngle(degrees: Float): Float {
 }
 
 /**
+ * How far to move a part so that the one of its [anchors] (its edges and centre along one side of the
+ * screen) closest to one of [lines] lands on it, and that line; null when none is within [reach].
+ */
+private fun snap(anchors: List<Float>, lines: List<Float>, reach: Float): Pair<Float, Float>? {
+    var best: Pair<Float, Float>? = null
+    for (a in anchors) for (line in lines) {
+        val by = line - a
+        if (abs(by) <= reach && (best == null || abs(by) < abs(best.first))) best = by to line
+    }
+    return best
+}
+
+/**
  * A small copy of the phone's screen showing the night clock as it will look, live, with every size
  * scaled down alike. Each part can be picked up and moved, pinched or dragged by its corner handle to
- * size and turn it, up to filling the whole screen. The copy always lies on its side; upright, the clock
- * in it is turned a quarter round, as the phone would be.
+ * size and turn it, up to filling the whole screen. A part being moved snaps its edges or centre onto the
+ * middle of the screen or onto another part's, with a line showing what it lines up with. The copy
+ * always lies on its side; upright, the clock in it is turned a quarter round, as the phone would be.
  */
 @Composable
 fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: Modifier = Modifier) {
@@ -124,6 +147,7 @@ fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: M
     val night by rememberUpdatedState(settings.night)
     val upright by rememberUpdatedState(editor.upright)
     val shape = RoundedCornerShape(18.dp)
+    val guideColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
 
     Box(
         modifier
@@ -134,6 +158,7 @@ fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: M
             .pointerInput(pxPerDp) {
                 val handleReach = (HandleRadius + 10.dp).toPx()
                 val slop = 6.dp.toPx()
+                val snapReach = SnapDistance.toPx()
                 awaitEachGesture {
                     // Touches are worked out on the clock's own screen, which upright is turned a quarter
                     // round inside the preview: its size swaps, and every point and movement turns back.
@@ -184,6 +209,17 @@ fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: M
                             (screen.height / 2f - half.y).coerceAtLeast(0f) / pxPerDp,
                         )
                     }
+                    // The edges and centre of each other part along the screen's width, or else its height,
+                    // with the middle of the screen, for the part being moved to line up with.
+                    val others = night.shownItems.filter { it != item }
+                    fun linesAlong(across: Boolean): List<Float> =
+                        listOf(if (across) screen.width / 2f else screen.height / 2f) + others.flatMap { other ->
+                            val c = centerOf(other)
+                            val half = turnedHalfSize(sizes[other] ?: IntSize.Zero, night.place(other, upright).rotation)
+                            if (across) listOf(c.x - half.x, c.x, c.x + half.x) else listOf(c.y - half.y, c.y, c.y + half.y)
+                        }
+                    val acrossLines = linesAlong(across = true)
+                    val downLines = linesAlong(across = false)
                     while (true) {
                         val event = awaitPointerEvent()
                         val pressed = event.changes.filter { it.pressed }
@@ -209,18 +245,30 @@ fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: M
                         val limit = reach()
                         x = x.coerceIn(-limit.x, limit.x)
                         y = y.coerceIn(-limit.y, limit.y)
-                        editLayout(
-                            item,
-                            upright,
-                            ItemPlace(
-                                x = if (abs(x) < SNAP_DP) 0f else x,
-                                y = if (abs(y) < SNAP_DP) 0f else y,
-                                scale = s,
-                                rotation = snapAngle(r),
-                            ),
-                        )
+                        val rotation = snapAngle(r)
+                        // Moved, the part snaps its edges or centre onto the middle or another part's, and
+                        // the line it snapped to shows; sized by its handle it stays where it is.
+                        var snappedX = x
+                        var snappedY = y
+                        val guides = mutableListOf<Guide>()
+                        if (!onHandle) {
+                            val half = turnedHalfSize(sizes[item] ?: IntSize.Zero, rotation)
+                            val cx = screen.width / 2f + x * pxPerDp
+                            val cy = screen.height / 2f + y * pxPerDp
+                            snap(listOf(cx - half.x, cx, cx + half.x), acrossLines, snapReach)?.let { (by, line) ->
+                                snappedX = (x + by / pxPerDp).coerceIn(-limit.x, limit.x)
+                                guides += Guide(vertical = true, at = line)
+                            }
+                            snap(listOf(cy - half.y, cy, cy + half.y), downLines, snapReach)?.let { (by, line) ->
+                                snappedY = (y + by / pxPerDp).coerceIn(-limit.y, limit.y)
+                                guides += Guide(vertical = false, at = line)
+                            }
+                        }
+                        editor.guides = guides
+                        editLayout(item, upright, ItemPlace(x = snappedX, y = snappedY, scale = s, rotation = rotation))
                         event.changes.forEach { it.consume() }
                     }
+                    editor.guides = emptyList()
                 }
             },
         contentAlignment = Alignment.Center,
@@ -232,7 +280,18 @@ fun ClockEditorTile(settings: AppSettings, editor: ClockEditorState, modifier: M
                     if (editor.upright) previewShort else PreviewLength,
                     if (editor.upright) PreviewLength else previewShort,
                 )
-                .graphicsLayer { rotationZ = if (editor.upright) -90f else 0f },
+                .graphicsLayer { rotationZ = if (editor.upright) -90f else 0f }
+                .drawWithContent {
+                    drawContent()
+                    editor.guides.forEach { guide ->
+                        val (from, to) = if (guide.vertical) {
+                            Offset(guide.at, 0f) to Offset(guide.at, size.height)
+                        } else {
+                            Offset(0f, guide.at) to Offset(size.width, guide.at)
+                        }
+                        drawLine(guideColor, from, to, strokeWidth = 1.dp.toPx())
+                    }
+                },
         ) {
             NightClockFace(
                 settings, now, battery,

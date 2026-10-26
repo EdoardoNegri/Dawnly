@@ -11,6 +11,7 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,6 +31,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -111,7 +113,7 @@ fun itemCenter(place: ItemPlace, drawn: IntSize, screen: IntSize, pxPerDp: Float
 }
 
 /**
- * A clock for the middle of the night. It stands in for the lock screen like a wallpaper: a tap asks
+ * A clock for the middle of the night. It stands in for the lock screen like a wallpaper: a tap or a swipe up asks
  * for the PIN or fingerprint right over it, and once the phone is unlocked, by tap or by fingerprint,
  * it steps aside and the phone opens on whatever was there before.
  */
@@ -401,11 +403,23 @@ private fun NightClock(
 
     val shift = burnInShift(now)
 
+    // A tap or a swipe up opens the phone, as on the alarm screen.
     NightClockFace(
         settings, now, battery,
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .pointerInput(Unit) {
+                var travelled = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { travelled = 0f },
+                    onVerticalDrag = { change, amount ->
+                        change.consume()
+                        travelled += amount
+                    },
+                    onDragEnd = { if (-travelled >= SwipeDistance.toPx()) onTap() },
+                )
+            }
             .clickable(interactionSource = null, indication = null, onClick = onTap)
             .offset(shift.dp, (shift / 2).dp),
         color = night.clockInk(),

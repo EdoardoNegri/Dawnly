@@ -330,7 +330,19 @@ data class AlarmScreen(
     val showTimeGesture: Gesture = Gesture.DOUBLE_TAP,
     /** Show the time all along; otherwise [showTimeGesture], or one that does nothing at that moment, shows it. */
     val showClock: Boolean = false,
-)
+) {
+    /**
+     * The gestures as the screen uses them, with [snoozes] allowed or not. An action that isn't there
+     * (snooze without snoozes, showing the time when it always shows) is off and frees its gesture; one
+     * that comes back to a gesture an action before it has taken since is off until it is given another.
+     */
+    fun inUse(snoozes: Boolean): AlarmScreen {
+        val snooze = snoozeGesture.takeIf { snoozes && it != stopGesture } ?: Gesture.NONE
+        val unlock = unlockGesture.takeIf { it != stopGesture && it != snooze } ?: Gesture.NONE
+        val showTime = showTimeGesture.takeIf { !showClock && it !in setOf(stopGesture, snooze, unlock) } ?: Gesture.NONE
+        return copy(snoozeGesture = snooze, unlockGesture = unlock, showTimeGesture = showTime)
+    }
+}
 
 /**
  * A vibration pattern the user imported. [timings] are in milliseconds and alternate vibrating and

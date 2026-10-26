@@ -126,7 +126,8 @@ private fun MainContent(settings: AppSettings, tab: Int, onTab: (Int) -> Unit) {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            // A shade apart from the cards, so the bar stands out from the page scrolling under it.
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 tabs.forEachIndexed { i, t ->
                     NavigationBarItem(
                         selected = tab == i,
@@ -434,9 +435,9 @@ private fun NightTab(settings: AppSettings, clockEditor: ClockEditorState, onDoc
             plan.alwaysOn,
             { v -> editNight { it.copy(alwaysOn = v) } },
             description = if (plan.alwaysOn) {
-                "From the first time you turn the screen off, the clock is your lock screen and stays on all night. Tap it to unlock."
+                "From the first time you turn the screen off, the clock is your lock screen and stays on all night. Tap it or swipe up to unlock."
             } else {
-                "From the first time you turn the screen off, the clock is your lock screen. Wake the screen to see the time, tap it to unlock."
+                "From the first time you turn the screen off, the clock is your lock screen. Wake the screen to see the time, tap it or swipe up to unlock."
             },
         )
         Text("Colour", style = MaterialTheme.typography.labelLarge)

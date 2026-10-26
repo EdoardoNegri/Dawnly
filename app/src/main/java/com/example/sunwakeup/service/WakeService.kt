@@ -2,7 +2,6 @@ package com.example.sunwakeup.service
 
 import android.app.KeyguardManager
 import android.app.Notification
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -98,7 +97,8 @@ class WakeService : Service() {
         private const val EXTRA_ALARM_AT = "alarmAt"
         private const val EXTRA_PREVIEW = "preview"
         private const val NOTIFICATION_ID = 20
-        private const val ALARM_NOTIFICATION_ID = 21
+        /** The alarm's notification takes turns between these, as only a new notification pops up. */
+        private val ALARM_NOTIFICATION_IDS = listOf(21, 22)
         private const val PREVIEW_SECONDS = 30
         // Sound and vibration change slowly and the sound smooths its own volume, so once a second is
         // plenty; a preview runs about sixty times faster and looks more often.
@@ -142,6 +142,14 @@ class WakeService : Service() {
     private var screenShown = false
     /** Whether the alarm's notification was last posted quietly; null while there is none. */
     private var alarmQuiet: Boolean? = null
+    /** Whether the alarm's notification has its Snooze button, which it only has while snoozing does something. */
+    private var snoozeShown = false
+    /**
+     * The service's one notification: a plain one at first, then the alarm's own once the alarm screen
+     * comes up, so the morning never shows two.
+     */
+    private var shownId = NOTIFICATION_ID
+    private var shown: Notification? = null
     private var vibeStep = 0
     private var savedAlarmVolume: Int? = null
 
@@ -170,7 +178,7 @@ class WakeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundCompat(NOTIFICATION_ID, notification())
+        startForegroundCompat(shownId, shown ?: notification())
         when (intent?.action) {
             ACTION_START -> begin(
                 intent.getLongExtra(EXTRA_ALARM_AT, System.currentTimeMillis()),
@@ -200,7 +208,11 @@ class WakeService : Service() {
         }
         screenShown = false
         holdWakeLock()
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
+        // Back to the plain notification until this routine's alarm screen comes up; a new id takes the old one away.
+        shownId = NOTIFICATION_ID
+        shown = null
+        alarmQuiet = null
+        startForegroundCompat(NOTIFICATION_ID, notification())
         if (loop == null) loop = scope.launch {
             while (isActive) {
                 tick()
@@ -254,6 +266,9 @@ class WakeService : Service() {
             }
         }
         setVibration(vibe, plan)
+        // Snooze appears on the notification once the alarm rings, and goes while snoozed.
+        val quiet = alarmQuiet
+        if (quiet != null && canSnoozeNow(s, plan, now) != snoozeShown) postAlarm(s, quiet)
 
         val ringFrom = s.resumedAt ?: s.alarmAt
         if (plan.autoStopMinutes > 0 && s.snoozedUntil == null && now >= ringFrom + s.span(plan.autoStopMinutes)) {
@@ -303,16 +318,21 @@ class WakeService : Service() {
     private fun endSnooze() {
         val s = _state.value ?: return
         if (s.snoozedUntil == null) return
-        _state.value = s.copy(snoozedUntil = null, resumedAt = System.currentTimeMillis())
+        val resumed = s.copy(snoozedUntil = null, resumedAt = System.currentTimeMillis())
+        _state.value = resumed
         if (!s.preview) Scheduler.cancelSnooze(this)
-        showAlarmScreen(s)
+        // Ringing again pops up again, as a new notification.
+        alarmQuiet = null
+        showAlarmScreen(resumed)
     }
 
     private fun dismiss() {
         val s = _state.value
         stopOutputs()
-        getSystemService(NotificationManager::class.java).cancel(ALARM_NOTIFICATION_ID)
+        // The notification goes with the service, in shutDown.
         alarmQuiet = null
+        shownId = NOTIFICATION_ID
+        shown = null
         _state.value = null
         if (s != null && !s.preview) Scheduler.cancelSnooze(this)
         Scheduler.rescheduleAll(this)
@@ -345,36 +365,50 @@ class WakeService : Service() {
     private fun phoneInUse() = getSystemService(PowerManager::class.java).isInteractive &&
         !getSystemService(KeyguardManager::class.java).isKeyguardLocked && !NightClockActivity.inFront
 
+    private fun canSnoozeNow(s: WakeState, plan: MorningPlan, now: Long) = s.ringing(now) && s.canSnooze(plan)
+
     /**
-     * The alarm's notification, with Snooze and Stop. It never pops up over the screen: while the alarm
-     * screen is in front, or the phone is being used, it waits quietly in the shade, where the alarm can be
-     * stopped. Otherwise it opens the alarm screen over the lock screen, if the app couldn't by itself.
+     * The alarm's notification, with Snooze while it rings and Stop, in place of the service's plain one. It
+     * never pops up over the screen: while the alarm screen is in front, or the phone is being used, it
+     * waits [quiet]ly in the shade, where the alarm can be stopped. Otherwise it opens the alarm screen over
+     * the lock screen, if the app couldn't by itself.
      */
-    private fun postAlarm(s: WakeState) {
-        val manager = getSystemService(NotificationManager::class.java)
-        val quiet = screenInFront || (!s.preview && (phoneInUse() || NightClockActivity.inFront))
+    private fun postAlarm(
+        s: WakeState,
+        quiet: Boolean = screenInFront || (!s.preview && (phoneInUse() || NightClockActivity.inFront)),
+    ) {
+        val now = System.currentTimeMillis()
+        val snoozable = canSnoozeNow(s, Repository.settings.value.morning, now)
         val pending = PendingIntent.getActivity(
             this, 1, alarmScreenIntent(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(this, if (quiet) Notifications.CHANNEL_MORNING else Notifications.CHANNEL_ALARM)
             .setSmallIcon(R.drawable.ic_stat_sun)
             .setContentTitle(if (s.preview) "Sunrise preview" else "Good morning")
-            .setContentText("Alarm at ${formatClock(s.alarmAt)}")
+            .setContentText(s.snoozedUntil?.let { "Snoozed until ${formatClock(it)}" } ?: "Alarm at ${formatClock(s.alarmAt)}")
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(if (quiet) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setOngoing(true)
             .setSilent(quiet)
+            // Updates, as when Snooze comes and goes, mustn't pop up again.
+            .setOnlyAlertOnce(true)
             .setContentIntent(pending)
             .apply { if (!quiet) setFullScreenIntent(pending, true) }
-            .apply { if (s.canSnooze(Repository.settings.value.morning)) addAction(0, "Snooze", serviceAction(ACTION_SNOOZE)) }
+            .apply { if (snoozable) addAction(0, "Snooze", serviceAction(ACTION_SNOOZE)) }
             .addAction(0, "Stop", serviceAction(ACTION_DISMISS))
             .build()
-        // Taking the old one away first is what clears a pop-up already on screen, and only a new
-        // notification opens its screen, not an update of one still there.
-        if (quiet != alarmQuiet) manager.cancel(ALARM_NOTIFICATION_ID)
+        // Only a new notification pops up and opens its screen, not an update of one still there, and the
+        // service's own notification can't be taken away. So a change between quiet and not posts it afresh
+        // under the other id, which takes the old one away with it, clearing a pop-up already on screen.
+        if (quiet != alarmQuiet || shownId == NOTIFICATION_ID) {
+            shownId = ALARM_NOTIFICATION_IDS.first { it != shownId }
+        }
         alarmQuiet = quiet
-        manager.notify(ALARM_NOTIFICATION_ID, notification)
+        snoozeShown = snoozable
+        shown = notification
+        startForegroundCompat(shownId, notification)
     }
 
     private fun notification(): Notification {

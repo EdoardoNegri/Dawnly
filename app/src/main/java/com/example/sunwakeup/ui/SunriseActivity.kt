@@ -134,8 +134,8 @@ private val AlarmScreen.gestures
 
 private val swipes = setOf(Gesture.SWIPE_UP, Gesture.SWIPE_DOWN, Gesture.SWIPE_LEFT, Gesture.SWIPE_RIGHT)
 
-/** How far a finger has to travel for a swipe. */
-private val SwipeDistance = 80.dp
+/** How far a finger has to travel for a swipe, here and on the night clock. */
+val SwipeDistance = 80.dp
 
 /**
  * Tells shaking the phone and turning it face down from the accelerometer, for whichever of the two
@@ -252,7 +252,7 @@ private fun SunriseScreen(
     val battery = remember(clock.minute) { batteryStatus(context) }
     // The time shows all along if that is on; otherwise for a little while after its own gesture, or after
     // snoozing or stopping, so a gesture always shows it did something.
-    val controls = settings.alarmScreen
+    val controls = settings.alarmScreen.inUse(snoozes = plan.snoozeLimit != 0)
     var shownAt by remember { mutableStateOf<Long?>(null) }
     val showClock = controls.showClock || shownAt?.let { now - it < CLOCK_ON_GESTURE_MS } == true
     // Kept up to date for the gesture listeners, which are only set up once, so they act on the alarm as it is now.

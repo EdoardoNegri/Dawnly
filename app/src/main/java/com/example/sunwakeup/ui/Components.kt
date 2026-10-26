@@ -107,6 +107,7 @@ private val colors = darkColorScheme(
     background = Color(0xFF14110F),
     surface = Color(0xFF14110F),
     surfaceContainer = Color(0xFF221D19),
+    surfaceContainerHigh = Color(0xFF302821),
     surfaceVariant = Color(0xFF3A322B),
     onSurfaceVariant = Color(0xFFD5C3B5),
 )

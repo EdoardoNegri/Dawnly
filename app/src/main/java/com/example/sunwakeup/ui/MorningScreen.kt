@@ -371,16 +371,18 @@ private fun AlarmScreen.with(action: ScreenAction, g: Gesture) = when (action) {
 }
 
 /**
- * Gives [action] the gesture [g]. Another action that had it takes this one's old gesture instead, so no
- * two share one; if that would leave Stop off, it gets the first gesture nothing uses.
+ * Gives [action] the gesture [g]. Another of the [shown] actions that had it takes this one's old gesture
+ * instead, so no two share one; if that would leave Stop off, it gets the first gesture nothing uses.
+ * Actions not shown keep theirs, which only counts again once they are back ([AlarmScreen.inUse]).
  */
-private fun AlarmScreen.assign(action: ScreenAction, g: Gesture): AlarmScreen {
-    val old = gesture(action)
-    val other = ScreenAction.entries.firstOrNull { it != action && g != Gesture.NONE && gesture(it) == g }
+private fun AlarmScreen.assign(action: ScreenAction, g: Gesture, snoozes: Boolean, shown: List<ScreenAction>): AlarmScreen {
+    val now = inUse(snoozes)
+    val old = now.gesture(action)
+    val other = shown.firstOrNull { it != action && g != Gesture.NONE && now.gesture(it) == g }
     var screen = with(action, g)
     if (other != null) {
         val swapped = if (old == Gesture.NONE && !other.canBeOff) {
-            Gesture.entries.first { it != Gesture.NONE && ScreenAction.entries.none { a -> screen.gesture(a) == it } }
+            Gesture.entries.first { it != Gesture.NONE && shown.none { a -> screen.inUse(snoozes).gesture(a) == it } }
         } else {
             old
         }
@@ -392,9 +394,9 @@ private fun AlarmScreen.assign(action: ScreenAction, g: Gesture): AlarmScreen {
 /** One gesture for each thing the alarm screen does. Picking one another action has swaps the two. */
 @Composable
 private fun AlarmScreenSection(settings: AppSettings) {
-    val controls = settings.alarmScreen
     val asker = LocalPermissions.current
     val snoozes = settings.morning.snoozeLimit != 0
+    val controls = settings.alarmScreen.inUse(snoozes)
     val actions = ScreenAction.entries.filter {
         (it != ScreenAction.SNOOZE || snoozes) && (it != ScreenAction.SHOW_TIME || !controls.showClock)
     }
@@ -419,6 +421,7 @@ private fun AlarmScreenSection(settings: AppSettings) {
             GestureRow(
                 action,
                 controls,
+                actions,
                 description = when (action) {
                     ScreenAction.SNOOZE -> "Only once the alarm rings; before that it just shows the time."
                     ScreenAction.STOP ->
@@ -428,7 +431,7 @@ private fun AlarmScreenSection(settings: AppSettings) {
                             "here or from its notification."
                     ScreenAction.SHOW_TIME -> "Shows it for 10 seconds."
                 },
-            ) { g -> editAlarmScreen { it.assign(action, g) } }
+            ) { g -> editAlarmScreen { it.assign(action, g, snoozes, actions) } }
         }
         if (!asker.granted(Access.ALARM_POPUP)) {
             Hint("Pop-ups are off for Dawnly, so the alarm may not show up to be stopped while the screen is off.")
@@ -437,9 +440,15 @@ private fun AlarmScreenSection(settings: AppSettings) {
     }
 }
 
-/** Picks the gesture for [action]; each choice says which other action it would take over from. */
+/** Picks the gesture for [action]; each choice says which other of the [shown] actions it would take over from. */
 @Composable
-private fun GestureRow(action: ScreenAction, controls: AlarmScreen, description: String, onSelect: (Gesture) -> Unit) {
+private fun GestureRow(
+    action: ScreenAction,
+    controls: AlarmScreen,
+    shown: List<ScreenAction>,
+    description: String,
+    onSelect: (Gesture) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     val selected = controls.gesture(action)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -447,7 +456,7 @@ private fun GestureRow(action: ScreenAction, controls: AlarmScreen, description:
         Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         DropdownRow(selected.label, open, { open = it }, trailing = {}) {
             Gesture.entries.filter { action.canBeOff || it != Gesture.NONE }.forEach { g ->
-                val usedBy = ScreenAction.entries.firstOrNull { it != action && g != Gesture.NONE && controls.gesture(it) == g }
+                val usedBy = shown.firstOrNull { it != action && g != Gesture.NONE && controls.gesture(it) == g }
                 DropdownMenuItem(
                     text = { Text(g.label + (usedBy?.let { " (now ${it.label.lowercase()})" } ?: "")) },
                     onClick = {
