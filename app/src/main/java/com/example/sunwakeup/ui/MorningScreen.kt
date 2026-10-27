@@ -417,13 +417,15 @@ private fun AlarmScreenSection(settings: AppSettings) {
                 "All of the screen is light; a gesture shows the time for 10 seconds."
             },
         )
-        actions.forEach { action ->
+        // Showing the time goes right under the switch it stands in for, while that is off.
+        actions.sortedBy { it != ScreenAction.SHOW_TIME }.forEach { action ->
             GestureRow(
                 action,
                 controls,
                 actions,
                 description = when (action) {
-                    ScreenAction.SNOOZE -> "Only once the alarm rings; before that it just shows the time."
+                    ScreenAction.SNOOZE ->
+                        "Before the alarm time, it only ends the sunrise and sound leading up to it; the alarm still rings."
                     ScreenAction.STOP ->
                         "Ends the whole morning: light, sound and vibration. Stopped during the sunrise, the alarm won't ring."
                     ScreenAction.UNLOCK ->

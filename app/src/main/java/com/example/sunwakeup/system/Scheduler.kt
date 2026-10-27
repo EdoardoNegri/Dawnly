@@ -37,13 +37,16 @@ object Scheduler {
         return null
     }
 
-    /** The next alarm time that has not already been handled, in epoch millis. */
+    /**
+     * The next alarm time that has not already been handled, in epoch millis. Only that one alarm is
+     * skipped, as when it was stopped during its sunrise: moved to another time, even an earlier one, it
+     * goes off again.
+     */
     fun nextAlarm(plan: MorningPlan): Long? {
         if (!plan.enabled) return null
-        val now = System.currentTimeMillis()
-        val after = maxOf(now, Repository.handledAlarmAt)
-        val from = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(after), java.time.ZoneId.systemDefault())
-        return nextOccurrence(plan.alarmMinutes, plan.days, from)?.toInstant()?.toEpochMilli()
+        val next = nextOccurrence(plan.alarmMinutes, plan.days) ?: return null
+        if (next.toInstant().toEpochMilli() != Repository.handledAlarmAt) return next.toInstant().toEpochMilli()
+        return nextOccurrence(plan.alarmMinutes, plan.days, next)?.toInstant()?.toEpochMilli()
     }
 
     fun nextEvening(): Long? {

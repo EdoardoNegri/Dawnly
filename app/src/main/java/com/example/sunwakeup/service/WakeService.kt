@@ -55,6 +55,19 @@ data class WakeState(
     /** Whether snooze is still allowed, now and after the snoozes used so far. */
     fun canSnooze(plan: MorningPlan) = plan.snoozeLimit?.let { snoozes < it } ?: true
 
+    /**
+     * Snoozed before the alarm time: only the light, sound and vibration leading up to it are skipped, and
+     * the alarm rings as set. A real snooze always ends after the alarm time, so it is never this.
+     */
+    val leadSkipped: Boolean get() = snoozedUntil == alarmAt
+
+    /**
+     * Whether snoozing does something now: before the alarm time it skips what leads up to the alarm, and
+     * once the alarm rings it snoozes it. Skipping the lead-up doesn't count as one of the snoozes.
+     */
+    fun snoozable(plan: MorningPlan, now: Long) =
+        (now < alarmAt && snoozedUntil == null || ringing(now)) && canSnooze(plan)
+
     /** Real milliseconds that [minutes] of the plan take. */
     fun span(minutes: Int): Long = (minutes * 60_000L / speed).toLong()
 
@@ -243,6 +256,11 @@ class WakeService : Service() {
 
         // Switching the alarm off in the app stops one that is already going.
         if (!s.preview && !plan.enabled) return dismiss()
+        // Moving the alarm time before it rings starts the morning again for the new time.
+        if (!s.preview && now < s.alarmAt) {
+            val next = Scheduler.nextOccurrence(plan.alarmMinutes, plan.days)?.toInstant()?.toEpochMilli()
+            if (next != s.alarmAt) return retime(next, plan, now)
+        }
         s.snoozedUntil?.let { if (now >= it) return endSnooze() }
 
         val volume = soundVolume(s, plan, now)
@@ -266,7 +284,7 @@ class WakeService : Service() {
             }
         }
         setVibration(vibe, plan)
-        // Snooze appears on the notification once the alarm rings, and goes while snoozed.
+        // Snooze is on the notification while it does something, and goes while snoozed.
         val quiet = alarmQuiet
         if (quiet != null && canSnoozeNow(s, plan, now) != snoozeShown) postAlarm(s, quiet)
 
@@ -308,7 +326,14 @@ class WakeService : Service() {
         val s = _state.value ?: return
         val now = System.currentTimeMillis()
         val plan = Repository.settings.value.morning
-        if (!s.ringing(now) || !s.canSnooze(plan)) return
+        if (!s.snoozable(plan, now)) return
+        if (now < s.alarmAt) {
+            // Before the alarm time all goes quiet and dark until then, and the alarm rings as set.
+            _state.value = s.copy(snoozedUntil = s.alarmAt)
+            stopOutputs()
+            if (!s.preview) Scheduler.scheduleSnooze(this, s.alarmAt)
+            return
+        }
         val until = now + s.span(plan.snoozeMinutes)
         _state.value = s.copy(snoozedUntil = until, resumedAt = null, snoozes = s.snoozes + 1)
         stopOutputs()
@@ -318,12 +343,25 @@ class WakeService : Service() {
     private fun endSnooze() {
         val s = _state.value ?: return
         if (s.snoozedUntil == null) return
-        val resumed = s.copy(snoozedUntil = null, resumedAt = System.currentTimeMillis())
+        // After a skipped lead-up the alarm goes on as if it had all along; after a snooze it starts again.
+        val resumed = s.copy(snoozedUntil = null, resumedAt = if (s.leadSkipped) null else System.currentTimeMillis())
         _state.value = resumed
         if (!s.preview) Scheduler.cancelSnooze(this)
         // Ringing again pops up again, as a new notification.
         alarmQuiet = null
         showAlarmScreen(resumed)
+    }
+
+    /**
+     * The alarm was moved to [alarmAt]. If its morning should already have begun, it starts again from
+     * where it would be by now, and rings at the new time; otherwise this one ends and the new one is
+     * scheduled as usual.
+     */
+    private fun retime(alarmAt: Long?, plan: MorningPlan, now: Long) {
+        if (alarmAt == null || now < alarmAt - plan.leadMinutes * 60_000L) return dismiss()
+        Scheduler.cancelSnooze(this)
+        Repository.handledAlarmAt = alarmAt
+        begin(alarmAt, preview = false)
     }
 
     private fun dismiss() {
@@ -365,10 +403,10 @@ class WakeService : Service() {
     private fun phoneInUse() = getSystemService(PowerManager::class.java).isInteractive &&
         !getSystemService(KeyguardManager::class.java).isKeyguardLocked && !NightClockActivity.inFront
 
-    private fun canSnoozeNow(s: WakeState, plan: MorningPlan, now: Long) = s.ringing(now) && s.canSnooze(plan)
+    private fun canSnoozeNow(s: WakeState, plan: MorningPlan, now: Long) = s.snoozable(plan, now)
 
     /**
-     * The alarm's notification, with Snooze while it rings and Stop, in place of the service's plain one. It
+     * The alarm's notification, with Snooze while snoozing does something and Stop, in place of the service's plain one. It
      * never pops up over the screen: while the alarm screen is in front, or the phone is being used, it
      * waits [quiet]ly in the shade, where the alarm can be stopped. Otherwise it opens the alarm screen over
      * the lock screen, if the app couldn't by itself.
@@ -385,7 +423,7 @@ class WakeService : Service() {
         val notification = NotificationCompat.Builder(this, if (quiet) Notifications.CHANNEL_MORNING else Notifications.CHANNEL_ALARM)
             .setSmallIcon(R.drawable.ic_stat_sun)
             .setContentTitle(if (s.preview) "Sunrise preview" else "Good morning")
-            .setContentText(s.snoozedUntil?.let { "Snoozed until ${formatClock(it)}" } ?: "Alarm at ${formatClock(s.alarmAt)}")
+            .setContentText(s.snoozedUntil?.takeIf { !s.leadSkipped }?.let { "Snoozed until ${formatClock(it)}" } ?: "Alarm at ${formatClock(s.alarmAt)}")
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(if (quiet) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

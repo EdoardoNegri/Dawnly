@@ -212,8 +212,16 @@ private fun SunriseScreen(
         }
     }
     // From the night clock to the sunrise, 0..1; straight to the sunrise when it wasn't opened over the clock.
+    // Snoozed before the alarm time, it goes back to the night clock until the alarm rings.
     val handOver = remember { Animatable(if (fromNight) 0f else 1f) }
-    LaunchedEffect(Unit) { handOver.animateTo(1f, tween(HAND_OVER_MS, easing = LinearEasing)) }
+    val leadSkipped = state?.leadSkipped == true
+    LaunchedEffect(leadSkipped) {
+        if (leadSkipped) {
+            handOver.animateTo(0f, tween(BACK_TO_NIGHT_MS, easing = LinearEasing))
+        } else {
+            handOver.animateTo(1f, tween(HAND_OVER_MS, easing = LinearEasing))
+        }
+    }
     val t = handOver.value
 
     // Once stopped here the light stays as it was, though the alarm is over.
@@ -246,6 +254,7 @@ private fun SunriseScreen(
 
     val status = when {
         stopped -> "Alarm off"
+        s.leadSkipped -> "Alarm at ${formatClock(s.alarmAt)}"
         else -> s.snoozedUntil?.let { "Snoozed until ${formatClock(it)}" }
     }
     val clock by rememberTickingNow(night.showSeconds)
@@ -258,10 +267,11 @@ private fun SunriseScreen(
     // Kept up to date for the gesture listeners, which are only set up once, so they act on the alarm as it is now.
     val onGesture by rememberUpdatedState { gesture: Gesture ->
         val at = System.currentTimeMillis()
-        // Snooze only does something while the alarm rings; before that its gesture just shows the time.
+        // Before the alarm time snooze skips what leads up to it, and once the alarm rings it snoozes it.
+        // When it can do neither, its gesture just shows the time.
         when (gesture) {
             controls.stopGesture -> if (!stopped) onStop()
-            controls.snoozeGesture -> if (!stopped && s.ringing(at) && s.canSnooze(plan)) {
+            controls.snoozeGesture -> if (!stopped && s.snoozable(plan, at)) {
                 WakeService.send(context, WakeService.ACTION_SNOOZE)
             }
             else -> {}
@@ -350,6 +360,9 @@ private const val PREVIEW_TICK_MS = 100L
 
 /** How long the night clock takes to fade into the sunrise. */
 private const val HAND_OVER_MS = 10_000
+
+/** How long the sunrise takes to fade back into the night clock, when snoozed before the alarm time. */
+private const val BACK_TO_NIGHT_MS = 2_000
 
 /** How long a gesture shows the time for, when it isn't always on. */
 private const val CLOCK_ON_GESTURE_MS = 10_000L
